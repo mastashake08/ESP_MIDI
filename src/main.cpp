@@ -44,13 +44,13 @@ const uint8_t drumNotes[NUM_PADS] = {
 
 // Touch sensitivity and calibration
 int touchBaseline[NUM_PADS];
-const int TOUCH_THRESHOLD = 15;
+const int TOUCH_THRESHOLD = 5;  // Much lower threshold for better sensitivity
 const int MIN_VELOCITY = 40;
 const int MAX_VELOCITY = 127;
 
 // Debouncing
 unsigned long lastHitTime[NUM_PADS] = {0};
-const unsigned long RETRIGGER_TIME = 50;
+const unsigned long RETRIGGER_TIME = 30; // Faster retriggering
 
 // LED feedback
 const int LED_PIN = 21;
@@ -58,6 +58,10 @@ unsigned long ledOffTime = 0;
 
 // WiFi OTA mode flag
 bool wifiEnabled = false;
+
+// Test mode - sends MIDI notes automatically
+unsigned long lastTestNote = 0;
+const unsigned long TEST_NOTE_INTERVAL = 2000; // Send test note every 2 seconds
 
 // OTA Update HTML page
 const char* otaHTML = R"rawliteral(
@@ -267,27 +271,31 @@ void setupWiFiAP() {
 }
 
 void calibrateTouchSensors() {
+    // Quick LED blink during calibration
     digitalWrite(LED_PIN, HIGH);
-    delay(2000);
+    delay(1000);
     digitalWrite(LED_PIN, LOW);
+    delay(500);
     
     for (int i = 0; i < NUM_PADS; i++) {
         int sum = 0;
         int validReadings = 0;
         
-        for (int j = 0; j < 10; j++) {
+        // Take 20 readings for better baseline
+        for (int j = 0; j < 20; j++) {
             int reading = touchRead(touchPins[i]);
-            if (reading > 0 && reading < 200) {
+            if (reading > 0 && reading < 300) {
                 sum += reading;
                 validReadings++;
             }
-            delay(10);
+            delay(5);
         }
         
-        if (validReadings > 0) {
+        if (validReadings > 5) {
             touchBaseline[i] = sum / validReadings;
         } else {
-            touchBaseline[i] = 50;
+            // Default to a high value so any touch will trigger
+            touchBaseline[i] = 80;
         }
     }
 }
@@ -299,14 +307,15 @@ void sendDrumHit(int padIndex, int touchValue) {
         return;
     }
     
-    int velocity = map(touchStrength, TOUCH_THRESHOLD, touchBaseline[padIndex] / 2, 
-                       MIN_VELOCITY, MAX_VELOCITY);
+    // Map to MIDI velocity - more sensitive range
+    int velocity = map(touchStrength, TOUCH_THRESHOLD, 50, MIN_VELOCITY, MAX_VELOCITY);
     velocity = constrain(velocity, MIN_VELOCITY, MAX_VELOCITY);
     
     MIDI.noteOn(drumNotes[padIndex], velocity, 10);
     
+    // Visual feedback - blink pattern based on pad
     digitalWrite(LED_PIN, HIGH);
-    ledOffTime = millis() + 50;
+    ledOffTime = millis() + 100;
     
     delay(10);
     MIDI.noteOff(drumNotes[padIndex], 0, 10);
@@ -375,6 +384,15 @@ void setup() {
     MIDI.begin();
     delay(500);
     
+    // Send test MIDI messages to verify device is working
+    // This helps confirm the device is recognized by the computer
+    for (int i = 0; i < 3; i++) {
+        MIDI.noteOn(36, 100, 10);  // Kick drum
+        delay(50);
+        MIDI.noteOff(36, 0, 10);
+        delay(200);
+    }
+    
     // Only start WiFi if enabled (avoids MIDI conflicts)
     if (wifiEnabled) {
         setupWiFiAP();
@@ -393,6 +411,19 @@ void loop() {
     if (wifiEnabled) {
         server.handleClient();
     }
+    
+    // Send periodic test MIDI note (helps verify device is working)
+    unsigned long currentTime = millis();
+    if (currentTime - lastTestNote > TEST_NOTE_INTERVAL) {
+        // Blink LED and send test note
+        digitalWrite(LED_PIN, HIGH);
+        MIDI.noteOn(38, 80, 10);  // Snare test
+        delay(30);
+        MIDI.noteOff(38, 0, 10);
+        digitalWrite(LED_PIN, LOW);
+        lastTestNote = currentTime;
+    }
+    
     scanTouchPads();
     delay(1);
 }
