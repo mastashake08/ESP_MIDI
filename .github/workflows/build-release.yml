@@ -1,0 +1,43 @@
+name: Build Firmware on Tag
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Triggers on version tags like v1.0.0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      
+      - name: Install PlatformIO Core
+        run: pip install --upgrade platformio
+      
+      - name: Build PlatformIO Project
+        run: pio run
+      
+      - name: Get firmware info
+        id: firmware_info
+        run: |
+          echo "firmware_path=$(find .pio/build -name 'firmware.bin' -o -name '*.bin' | head -n 1)" >> $GITHUB_OUTPUT
+          echo "tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            .pio/build/**/firmware.bin
+            .pio/build/**/firmware.elf
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
