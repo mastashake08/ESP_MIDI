@@ -6,7 +6,7 @@
 USBMIDI MIDI;
 
 // Drum kit configuration
-const int NUM_PADS = 8;
+const int NUM_PADS = 10;  // Increase from 8 to 10 (or more)
 
 // Touch-capable GPIO pins on XIAO ESP32-S3
 const int touchPins[NUM_PADS] = {
@@ -17,7 +17,9 @@ const int touchPins[NUM_PADS] = {
     GPIO_NUM_5,   // D4 / T5
     GPIO_NUM_6,   // D5 / T6
     GPIO_NUM_7,   // D6 / T7
-    GPIO_NUM_8    // D7 / T8
+    GPIO_NUM_8,   // D7 / T8
+    GPIO_NUM_9,   // D8 / T9
+    GPIO_NUM_10   // D9 / T10
 };
 
 // General MIDI drum notes (Channel 10 percussion)
@@ -29,7 +31,9 @@ const uint8_t drumNotes[NUM_PADS] = {
     45,  // Low Tom
     48,  // Mid Tom
     50,  // High Tom
-    49   // Crash Cymbal
+    49,  // Crash Cymbal
+    51,  // Ride Cymbal - NEW
+    37   // Side Stick - NEW
 };
 
 // Touch sensitivity and calibration
