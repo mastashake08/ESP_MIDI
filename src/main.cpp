@@ -162,9 +162,16 @@ void setup() {
         delay(200);
     }
     
-    // Initialize USB MIDI
-    MIDI.begin();
+    // Initialize USB with custom name
+    USB.VID(0x2886);  // Seeed Studio Vendor ID
+    USB.PID(0x0080);  // Product ID
+    USB.productName("Shake Drum Kit");  // Your custom name here
+    USB.manufacturerName("Mastashake");  // Your manufacturer name
+    USB.serialNumber("008");
     USB.begin();
+    
+    // Initialize MIDI
+    MIDI.begin();
     
     Serial.println("USB MIDI initialized");
     
