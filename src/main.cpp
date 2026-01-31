@@ -1,12 +1,22 @@
 #include <Arduino.h>
 #include "USB.h"
 #include "USBMIDI.h"
+#include <WiFi.h>
+#include <WebServer.h>
+#include <Update.h>
 
 // ESP32's built-in USB MIDI
 USBMIDI MIDI;
 
+// WiFi AP Configuration
+const char* ap_ssid = "DrumKit-OTA";
+const char* ap_password = "drumkit123";
+
+// Web server on port 80
+WebServer server(80);
+
 // Drum kit configuration
-const int NUM_PADS = 10;  // Increase from 8 to 10 (or more)
+const int NUM_PADS = 8;
 
 // Touch-capable GPIO pins on XIAO ESP32-S3
 const int touchPins[NUM_PADS] = {
@@ -17,9 +27,7 @@ const int touchPins[NUM_PADS] = {
     GPIO_NUM_5,   // D4 / T5
     GPIO_NUM_6,   // D5 / T6
     GPIO_NUM_7,   // D6 / T7
-    GPIO_NUM_8,   // D7 / T8
-    GPIO_NUM_9,   // D8 / T9
-    GPIO_NUM_10   // D9 / T10
+    GPIO_NUM_8    // D7 / T8
 };
 
 // General MIDI drum notes (Channel 10 percussion)
@@ -31,31 +39,238 @@ const uint8_t drumNotes[NUM_PADS] = {
     45,  // Low Tom
     48,  // Mid Tom
     50,  // High Tom
-    49,  // Crash Cymbal
-    51,  // Ride Cymbal - NEW
-    37   // Side Stick - NEW
+    49   // Crash Cymbal
 };
 
 // Touch sensitivity and calibration
 int touchBaseline[NUM_PADS];
-const int TOUCH_THRESHOLD = 15;  // Decrease from baseline to trigger
-const int MIN_VELOCITY = 40;     // Minimum MIDI velocity
-const int MAX_VELOCITY = 127;    // Maximum MIDI velocity
+const int TOUCH_THRESHOLD = 15;
+const int MIN_VELOCITY = 40;
+const int MAX_VELOCITY = 127;
 
 // Debouncing
 unsigned long lastHitTime[NUM_PADS] = {0};
-const unsigned long RETRIGGER_TIME = 50; // ms
+const unsigned long RETRIGGER_TIME = 50;
 
 // LED feedback
 const int LED_PIN = 21;
 unsigned long ledOffTime = 0;
 
-void calibrateTouchSensors() {
-    Serial.println("Calibrating touch sensors...");
-    Serial.println("Don't touch the pads for 2 seconds...");
-    delay(2000);
+// WiFi OTA mode flag
+bool wifiEnabled = false;
+
+// OTA Update HTML page
+const char* otaHTML = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drum Kit OTA Update</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f0f0f0;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .info {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        input[type="file"] {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 2px dashed #ccc;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        input[type="submit"] {
+            width: 100%;
+            padding: 15px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        input[type="submit"]:hover {
+            background: #45a049;
+        }
+        .progress {
+            width: 100%;
+            height: 30px;
+            background: #f0f0f0;
+            border-radius: 5px;
+            overflow: hidden;
+            display: none;
+            margin: 20px 0;
+        }
+        .progress-bar {
+            height: 100%;
+            background: #4CAF50;
+            width: 0%;
+            transition: width 0.3s;
+            text-align: center;
+            line-height: 30px;
+            color: white;
+        }
+        .status {
+            text-align: center;
+            margin: 20px 0;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🥁 Drum Kit OTA Update</h1>
+        <div class="info">
+            <strong>Device:</strong> Shake Drum Kit<br>
+            <strong>WiFi:</strong> DrumKit-OTA<br>
+            <strong>Instructions:</strong> Select a .bin firmware file and click Update
+        </div>
+        <form method="POST" action="/update" enctype="multipart/form-data" id="uploadForm">
+            <input type="file" name="firmware" accept=".bin" required>
+            <input type="submit" value="Update Firmware">
+        </form>
+        <div class="progress" id="progress">
+            <div class="progress-bar" id="progressBar">0%</div>
+        </div>
+        <div class="status" id="status"></div>
+    </div>
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            var formData = new FormData(this);
+            var xhr = new XMLHttpRequest();
+            
+            document.getElementById('progress').style.display = 'block';
+            document.getElementById('status').textContent = 'Uploading...';
+            
+            xhr.upload.addEventListener('progress', function(e) {
+                if (e.lengthComputable) {
+                    var percent = (e.loaded / e.total) * 100;
+                    document.getElementById('progressBar').style.width = percent + '%';
+                    document.getElementById('progressBar').textContent = Math.round(percent) + '%';
+                }
+            });
+            
+            xhr.addEventListener('load', function() {
+                if (xhr.status === 200) {
+                    document.getElementById('status').textContent = 'Update successful! Device rebooting...';
+                    document.getElementById('status').style.color = 'green';
+                } else {
+                    document.getElementById('status').textContent = 'Update failed: ' + xhr.responseText;
+                    document.getElementById('status').style.color = 'red';
+                }
+            });
+            
+            xhr.addEventListener('error', function() {
+                document.getElementById('status').textContent = 'Upload error occurred';
+                document.getElementById('status').style.color = 'red';
+            });
+            
+            xhr.open('POST', '/update');
+            xhr.send(formData);
+        });
+    </script>
+</body>
+</html>
+)rawliteral";
+
+void handleRoot() {
+    server.send(200, "text/html", otaHTML);
+}
+
+void handleUpdate() {
+    server.sendHeader("Connection", "close");
+    server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
+    delay(500);
+    ESP.restart();
+}
+
+void handleUpload() {
+    HTTPUpload& upload = server.upload();
     
-    // Read baseline values (not touched)
+    if (upload.status == UPLOAD_FILE_START) {
+        digitalWrite(LED_PIN, HIGH);
+        
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+            Update.printError(Serial);
+        }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+        static unsigned long lastBlink = 0;
+        if (millis() - lastBlink > 100) {
+            digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+            lastBlink = millis();
+        }
+        
+        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+            Update.printError(Serial);
+        }
+    } else if (upload.status == UPLOAD_FILE_END) {
+        if (Update.end(true)) {
+            digitalWrite(LED_PIN, HIGH);
+        } else {
+            Update.printError(Serial);
+            digitalWrite(LED_PIN, LOW);
+        }
+    }
+}
+
+void setupWiFiAP() {
+    // Disconnect from any previous WiFi connections
+    WiFi.disconnect(true);
+    delay(100);
+    
+    // Set WiFi mode to AP only
+    WiFi.mode(WIFI_AP);
+    delay(100);
+    
+    // Configure and start AP with stronger settings
+    WiFi.softAP(ap_ssid, ap_password, 1, 0, 4);
+    delay(500);
+    
+    // Verify AP started
+    IPAddress IP = WiFi.softAPIP();
+    
+    // LED pattern: 5 rapid blinks = WiFi AP ready
+    for (int i = 0; i < 5; i++) {
+        digitalWrite(LED_PIN, HIGH);
+        delay(100);
+        digitalWrite(LED_PIN, LOW);
+        delay(100);
+    }
+    
+    // Setup web server routes
+    server.on("/", HTTP_GET, handleRoot);
+    server.on("/update", HTTP_POST, handleUpdate, handleUpload);
+    
+    server.begin();
+    delay(100);
+}
+
+void calibrateTouchSensors() {
+    digitalWrite(LED_PIN, HIGH);
+    delay(2000);
+    digitalWrite(LED_PIN, LOW);
+    
     for (int i = 0; i < NUM_PADS; i++) {
         int sum = 0;
         int validReadings = 0;
@@ -72,49 +287,27 @@ void calibrateTouchSensors() {
         if (validReadings > 0) {
             touchBaseline[i] = sum / validReadings;
         } else {
-            touchBaseline[i] = 50; // Default if no valid readings
+            touchBaseline[i] = 50;
         }
-        
-        Serial.print("Pad ");
-        Serial.print(i);
-        Serial.print(" (Note ");
-        Serial.print(drumNotes[i]);
-        Serial.print("): Baseline = ");
-        Serial.println(touchBaseline[i]);
     }
-    
-    Serial.println("Calibration complete! Touch pads to play drums.");
 }
 
 void sendDrumHit(int padIndex, int touchValue) {
-    // Calculate touch strength
     int touchStrength = touchBaseline[padIndex] - touchValue;
     
     if (touchStrength < TOUCH_THRESHOLD) {
         return;
     }
     
-    // Map to MIDI velocity (40-127)
     int velocity = map(touchStrength, TOUCH_THRESHOLD, touchBaseline[padIndex] / 2, 
                        MIN_VELOCITY, MAX_VELOCITY);
     velocity = constrain(velocity, MIN_VELOCITY, MAX_VELOCITY);
     
-    // Send MIDI Note On
     MIDI.noteOn(drumNotes[padIndex], velocity, 10);
     
-    // Visual feedback
     digitalWrite(LED_PIN, HIGH);
     ledOffTime = millis() + 50;
     
-    // Debug
-    Serial.print("Hit Pad ");
-    Serial.print(padIndex);
-    Serial.print(" (Note ");
-    Serial.print(drumNotes[padIndex]);
-    Serial.print("): Velocity ");
-    Serial.println(velocity);
-    
-    // Send Note Off
     delay(10);
     MIDI.noteOff(drumNotes[padIndex], 0, 10);
 }
@@ -123,22 +316,18 @@ void scanTouchPads() {
     unsigned long currentTime = millis();
     
     for (int i = 0; i < NUM_PADS; i++) {
-        // Debouncing
         if (currentTime - lastHitTime[i] < RETRIGGER_TIME) {
             continue;
         }
         
-        // Read touch value
         int touchValue = touchRead(touchPins[i]);
         
-        // Check if pad is touched
         if (touchBaseline[i] - touchValue > TOUCH_THRESHOLD) {
             sendDrumHit(i, touchValue);
             lastHitTime[i] = currentTime;
         }
     }
     
-    // Turn off LED after timeout
     if (ledOffTime > 0 && currentTime >= ledOffTime) {
         digitalWrite(LED_PIN, LOW);
         ledOffTime = 0;
@@ -146,50 +335,65 @@ void scanTouchPads() {
 }
 
 void setup() {
-    Serial.begin(115200);
-    delay(1000);
-    Serial.println("ESP32 USB MIDI Drum Kit Starting...");
-    
-    // Initialize LED
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
     
-    // Flash LED 3 times
-    for (int i = 0; i < 3; i++) {
-        digitalWrite(LED_PIN, HIGH);
-        delay(200);
-        digitalWrite(LED_PIN, LOW);
-        delay(200);
+    // Check if pad 0 is held down during boot for WiFi mode
+    delay(500);
+    int bootCheck = touchRead(touchPins[0]);
+    
+    // If pad 0 touched during boot, enable WiFi OTA mode
+    if (bootCheck < 40) {
+        wifiEnabled = true;
+        // 10 rapid blinks = WiFi mode enabled
+        for (int i = 0; i < 10; i++) {
+            digitalWrite(LED_PIN, HIGH);
+            delay(50);
+            digitalWrite(LED_PIN, LOW);
+            delay(50);
+        }
+        delay(500);
+    } else {
+        // 3 slow blinks = normal MIDI mode
+        for (int i = 0; i < 3; i++) {
+            digitalWrite(LED_PIN, HIGH);
+            delay(200);
+            digitalWrite(LED_PIN, LOW);
+            delay(200);
+        }
     }
     
-    // Initialize USB with custom name
-    USB.VID(0x2886);  // Seeed Studio Vendor ID
-    USB.PID(0x0080);  // Product ID
-    USB.productName("Shake Drum Kit");  // Your custom name here
-    USB.manufacturerName("Mastashake");  // Your manufacturer name
+    // Initialize USB MIDI FIRST
+    USB.VID(0x2886);
+    USB.PID(0x0080);
+    USB.productName("Shake Drum Kit");
+    USB.manufacturerName("Mastashake");
     USB.serialNumber("008");
     USB.begin();
+    delay(500);
     
-    // Initialize MIDI
     MIDI.begin();
+    delay(500);
     
-    Serial.println("USB MIDI initialized");
+    // Only start WiFi if enabled (avoids MIDI conflicts)
+    if (wifiEnabled) {
+        setupWiFiAP();
+    }
     
     // Calibrate touch sensors
     calibrateTouchSensors();
     
-    // Long flash to indicate ready
+    // Long solid = ready
     digitalWrite(LED_PIN, HIGH);
-    delay(500);
+    delay(1000);
     digitalWrite(LED_PIN, LOW);
-    
-    Serial.println("Ready to play!");
 }
 
 void loop() {
-    // Scan touch pads for hits
+    if (wifiEnabled) {
+        server.handleClient();
+    }
     scanTouchPads();
-    
     delay(1);
 }
 
