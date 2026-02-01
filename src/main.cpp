@@ -18,16 +18,16 @@ WebServer server(80);
 // Drum kit configuration
 const int NUM_PADS = 8;
 
-// Touch-capable GPIO pins on XIAO ESP32-S3
+// GPIO pins on XIAO ESP32-S3 configured as digital inputs
 const int touchPins[NUM_PADS] = {
-    GPIO_NUM_1,   // D0 / T1
-    GPIO_NUM_2,   // D1 / T2  
-    GPIO_NUM_3,   // D2 / T3
-    GPIO_NUM_4,   // D3 / T4
-    GPIO_NUM_5,   // D4 / T5
-    GPIO_NUM_6,   // D5 / T6
-    GPIO_NUM_7,   // D6 / T7
-    GPIO_NUM_8    // D7 / T8
+    GPIO_NUM_1,   // D0
+    GPIO_NUM_2,   // D1  
+    GPIO_NUM_3,   // D2
+    GPIO_NUM_4,   // D3
+    GPIO_NUM_5,   // D4
+    GPIO_NUM_6,   // D5
+    GPIO_NUM_7,   // D6
+    GPIO_NUM_8    // D7
 };
 
 // General MIDI drum notes (Channel 10 percussion)
@@ -44,7 +44,8 @@ const uint8_t drumNotes[NUM_PADS] = {
 
 // Touch sensitivity and calibration
 int touchBaseline[NUM_PADS];
-const int TOUCH_THRESHOLD = 5;  // Much lower threshold for better sensitivity
+int lastTouchValue[NUM_PADS] = {0};
+const int TOUCH_THRESHOLD = 2;  // Extremely low threshold
 const int MIN_VELOCITY = 40;
 const int MAX_VELOCITY = 127;
 
@@ -59,9 +60,9 @@ unsigned long ledOffTime = 0;
 // WiFi OTA mode flag
 bool wifiEnabled = false;
 
-// Test mode - sends MIDI notes automatically
-unsigned long lastTestNote = 0;
-const unsigned long TEST_NOTE_INTERVAL = 2000; // Send test note every 2 seconds
+// Diagnostic mode - prints touch values
+bool diagnosticMode = true;
+unsigned long lastDiagPrint = 0;
 
 // OTA Update HTML page
 const char* otaHTML = R"rawliteral(
@@ -270,6 +271,16 @@ void setupWiFiAP() {
     delay(100);
 }
 
+void initializeTouchSensors() {
+    // Configure pins as digital inputs with internal pullup
+    // Touch pin to GND to trigger
+    for (int i = 0; i < NUM_PADS; i++) {
+        pinMode(touchPins[i], INPUT_PULLUP);
+        delay(5);
+    }
+    delay(100);
+}
+
 void calibrateTouchSensors() {
     // Quick LED blink during calibration
     digitalWrite(LED_PIN, HIGH);
@@ -324,22 +335,34 @@ void sendDrumHit(int padIndex, int touchValue) {
 void scanTouchPads() {
     unsigned long currentTime = millis();
     
+    // LED heartbeat every 500ms = system alive
+    if (currentTime - lastDiagPrint > 500) {
+        digitalWrite(LED_PIN, HIGH);
+        delay(20);
+        digitalWrite(LED_PIN, LOW);
+        lastDiagPrint = currentTime;
+    }
+    
     for (int i = 0; i < NUM_PADS; i++) {
         if (currentTime - lastHitTime[i] < RETRIGGER_TIME) {
             continue;
         }
         
-        int touchValue = touchRead(touchPins[i]);
+        // Read digital pin state (LOW = pressed/grounded)
+        int pinState = digitalRead(touchPins[i]);
         
-        if (touchBaseline[i] - touchValue > TOUCH_THRESHOLD) {
-            sendDrumHit(i, touchValue);
+        // If pin is LOW (connected to ground or touched), trigger MIDI
+        if (pinState == LOW) {
+            // Send MIDI note
+            MIDI.noteOn(drumNotes[i], 100, 10);
+            digitalWrite(LED_PIN, HIGH);
+            delay(10);
+            MIDI.noteOff(drumNotes[i], 0, 10);
+            delay(10);
+            digitalWrite(LED_PIN, LOW);
+            
             lastHitTime[i] = currentTime;
         }
-    }
-    
-    if (ledOffTime > 0 && currentTime >= ledOffTime) {
-        digitalWrite(LED_PIN, LOW);
-        ledOffTime = 0;
     }
 }
 
@@ -384,22 +407,8 @@ void setup() {
     MIDI.begin();
     delay(500);
     
-    // Send test MIDI messages to verify device is working
-    // This helps confirm the device is recognized by the computer
-    for (int i = 0; i < 3; i++) {
-        MIDI.noteOn(36, 100, 10);  // Kick drum
-        delay(50);
-        MIDI.noteOff(36, 0, 10);
-        delay(200);
-    }
-    
-    // Only start WiFi if enabled (avoids MIDI conflicts)
-    if (wifiEnabled) {
-        setupWiFiAP();
-    }
-    
-    // Calibrate touch sensors
-    calibrateTouchSensors();
+    // Initialize pin modes
+    initializeTouchSensors();
     
     // Long solid = ready
     digitalWrite(LED_PIN, HIGH);
@@ -410,18 +419,6 @@ void setup() {
 void loop() {
     if (wifiEnabled) {
         server.handleClient();
-    }
-    
-    // Send periodic test MIDI note (helps verify device is working)
-    unsigned long currentTime = millis();
-    if (currentTime - lastTestNote > TEST_NOTE_INTERVAL) {
-        // Blink LED and send test note
-        digitalWrite(LED_PIN, HIGH);
-        MIDI.noteOn(38, 80, 10);  // Snare test
-        delay(30);
-        MIDI.noteOff(38, 0, 10);
-        digitalWrite(LED_PIN, LOW);
-        lastTestNote = currentTime;
     }
     
     scanTouchPads();
